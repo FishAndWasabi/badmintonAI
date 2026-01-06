@@ -1,0 +1,7 @@
+dash==2.5.1
+numpy
+opencv_python
+pandas==2.0.0
+Pillow==10.0.0
+plotly==5.8.2
+parse

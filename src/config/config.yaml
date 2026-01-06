@@ -1,0 +1,61 @@
+# Badminton AI System Configuration
+
+# 球轨迹追踪配置
+ball_tracking:
+  method: "yolo_tracker"  # "yolo_tracker" or "tracknetv3"
+  yolo:
+    model_path: "models/ball_tracking/yolo_badminton.pt"
+    conf_threshold: 0.5
+    iou_threshold: 0.45
+  tracknetv3:
+    model_path: "models/ball_tracking/TrackNetv3/model.pth"
+    input_size: [288, 512]
+    confidence_threshold: 0.5
+
+# 姿态估计配置
+pose_estimation:
+  method: "yolo_pose"  # "rtmw" or "yolo_pose"
+  rtmw:
+    model_path: "models/pose_estimation/RTMW/model.pth"
+    input_size: [256, 192]
+  yolo_pose:
+    model: "yolo11n-pose.pt"  # 使用ultralytics预训练模型
+    conf_threshold: 0.5
+    keypoint_threshold: 0.5
+
+# 坐标统一配置
+coordinate_unify:
+  court_width: 6.1  # 米
+  court_length: 13.4  # 米
+  camera_calibration: null  # 相机标定文件路径，如果为null则使用默认值
+
+# 信息整合配置
+info_integration:
+  ball_speed_threshold: 5.0  # 米/秒，低于此值认为球静止
+  hit_detection_radius: 0.5  # 米，击球检测半径
+
+# 球种识别配置
+shot_classification:
+  method: "rule_based"  # "classifier" or "rule_based"
+  classifier:
+    model_path: "models/shot_classification/classifier.pkl"
+  rule_based:
+    speed_thresholds:
+      high: 20.0  # 米/秒
+      medium: 10.0  # 米/秒
+    angle_thresholds:
+      steep: 45.0  # 度
+      flat: 15.0  # 度
+
+# 视频处理配置
+video:
+  fps: 30  # 视频帧率
+  output_format: "mp4"
+  save_visualization: true
+
+# 输出配置
+output:
+  save_trajectory: true
+  save_pose: true
+  save_classification: true
+  visualization: true
