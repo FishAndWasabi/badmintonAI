@@ -1,58 +1,66 @@
-"""Video processing utilities"""
+"""Video processing utilities for online video streams"""
 
 import cv2
 import numpy as np
 from typing import Generator, Tuple, Optional
 
 
-def load_video(video_path: str) -> Tuple[cv2.VideoCapture, dict]:
+def load_video_stream(stream_url: str) -> Tuple[cv2.VideoCapture, dict]:
     """
-    加载视频文件
+    Load online video stream (RTSP, RTMP, HTTP, etc.)
     
     Args:
-        video_path: 视频文件路径
+        stream_url: Video stream URL (e.g., rtsp://, rtmp://, http://, or camera index)
         
     Returns:
-        video_capture: OpenCV视频捕获对象
-        video_info: 视频信息字典（fps, width, height, frame_count）
+        video_capture: OpenCV video capture object
+        video_info: Video info dictionary (fps, width, height, frame_count=None for streams)
     """
-    cap = cv2.VideoCapture(video_path)
+    # Set buffer size to reduce latency for streams
+    cap = cv2.VideoCapture(stream_url)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer for real-time processing
+    
     if not cap.isOpened():
-        raise ValueError(f"无法打开视频文件: {video_path}")
+        raise ValueError(f"Failed to open video stream: {stream_url}")
     
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # For streams, frame_count is typically -1 or 0 (unknown)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if frame_count <= 0:
+        frame_count = None
     
     video_info = {
-        'fps': fps,
+        'fps': fps if fps > 0 else 30.0,  # Default to 30 if unknown
         'width': width,
         'height': height,
-        'frame_count': frame_count
+        'frame_count': frame_count  # None for live streams
     }
     
     return cap, video_info
 
 
-def frame_generator(video_path: str) -> Generator[Tuple[int, np.ndarray], None, None]:
+def frame_generator(stream_url: str) -> Generator[Tuple[int, np.ndarray], None, None]:
     """
-    视频帧生成器
+    Video stream frame generator (real-time processing)
     
     Args:
-        video_path: 视频文件路径
+        stream_url: Video stream URL
         
     Yields:
-        frame_idx: 帧索引
-        frame: 视频帧（BGR格式）
+        frame_idx: Frame index
+        frame: Video frame (BGR format)
     """
-    cap, _ = load_video(video_path)
+    cap, _ = load_video_stream(stream_url)
     frame_idx = 0
     
     while True:
         ret, frame = cap.read()
         if not ret:
-            break
+            # For streams, try to continue reading (stream might be temporarily unavailable)
+            continue
         yield frame_idx, frame
         frame_idx += 1
     
@@ -61,13 +69,13 @@ def frame_generator(video_path: str) -> Generator[Tuple[int, np.ndarray], None, 
 
 def save_video(frames: list, output_path: str, fps: float, size: Tuple[int, int]):
     """
-    保存视频文件
+    Save video file
     
     Args:
-        frames: 帧列表
-        output_path: 输出路径
-        fps: 帧率
-        size: 视频尺寸 (width, height)
+        frames: List of frames
+        output_path: Output path
+        fps: Frame rate
+        size: Video size (width, height)
     """
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, size)

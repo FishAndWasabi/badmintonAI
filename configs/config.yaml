@@ -1,27 +1,30 @@
-# Badminton AI System Configuration
-
 # 球轨迹追踪配置
 ball_tracking:
-  method: "yolo_tracker"  # "yolo_tracker" or "tracknetv3"
+  # method 已移至主函数参数，可通过命令行指定
   yolo:
     model_path: "models/ball_tracking/yolo_badminton.pt"
-    conf_threshold: 0.5
+    conf_threshold: 0.7  # 进一步提高阈值，减少检测数量（原0.5，第一次优化0.6）
     iou_threshold: 0.45
   tracknetv3:
-    model_path: "models/ball_tracking/TrackNetv3/model.pth"
+    model_path: "ckpts/ball_tracking/TrackNet_best.pt"
     input_size: [288, 512]
     confidence_threshold: 0.5
 
 # 姿态估计配置
 pose_estimation:
-  method: "yolo_pose"  # "rtmw" or "yolo_pose"
-  rtmw:
-    model_path: "models/pose_estimation/RTMW/model.pth"
-    input_size: [256, 192]
+  # method 已移至主函数参数，可通过命令行指定
   yolo_pose:
     model: "yolo11n-pose.pt"  # 使用ultralytics预训练模型
-    conf_threshold: 0.5
-    keypoint_threshold: 0.5
+    conf_threshold: 0.1
+    keypoint_threshold: 0.1
+  rtmw:
+    config_path: null  # Auto-detect if null
+    checkpoint_path: null  # Auto-download if null
+    device: null  # Auto-select if null
+    det_config: null  # Auto-detect if null (RTMDet for multi-person detection)
+    det_checkpoint: null  # Auto-download if null
+    det_score_thr: 0.3  # Detection score threshold (lower = more detections)
+    det_nms_thr: 0.3  # NMS IOU threshold (lower = more detections)
 
 # 坐标统一配置
 coordinate_unify:

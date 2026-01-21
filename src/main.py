@@ -1,90 +1,68 @@
 """Main entry point for Badminton AI Analysis System"""
 
 import argparse
-import yaml
 import cv2
+import json
 import numpy as np
+import time
+import yaml
 from pathlib import Path
-from typing import Optional
-import sys
-import os
+from typing import Optional, Callable, Union, Tuple, Dict
 
-# 添加项目根目录到路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.utils.video_utils import load_video, frame_generator
+from src.utils.video_utils import load_video_stream, frame_generator
 from src.utils.visualization import draw_ball, draw_pose, draw_trajectory, draw_text
-from src.ball_tracking.yolo_tracker import YOLOBallTracker
-from src.ball_tracking.tracknetv3 import TrackNetv3Tracker
-from src.pose_estimation.yolo_pose import YOLOPoseEstimator
-from src.pose_estimation.rtmw import RTMWPoseEstimator
+from src.utils.performance import PerformanceMonitor
+from src.utils.registry import registry
 from src.coordinate_unify.unify import CoordinateUnifier
 from src.info_integration.integration import InfoIntegrator
-from src.shot_classification.rule_based import RuleBasedClassifier
-from src.shot_classification.classifier import MLShotClassifier
+
+from src import *
 
 
 class BadmintonAISystem:
-    """羽毛球AI分析系统主类"""
+    """Badminton AI Analysis System main class"""
     
-    def __init__(self, config_path: str = "src/config/config.yaml"):
+    def __init__(self, config_path: str = "configs/config.yaml",
+                 ball_tracking_method: Optional[str] = None,
+                 pose_estimation_method: Optional[str] = None):
         """
-        初始化系统
+        Initialize the system
         
         Args:
-            config_path: 配置文件路径
+            config_path: Path to configuration file
+            ball_tracking_method: Ball tracking method ("yolo_tracker" or "tracknetv3"). 
+                                  If None, will use default from config or "tracknetv3"
+            pose_estimation_method: Pose estimation method ("rtmw" or "yolo_pose").
+                                    If None, will use default from config or "yolo_pose"
         """
-        # 加载配置
-        with open(config_path, 'r', encoding='utf-8') as f:
+        # Load configuration
+        config_file = Path(config_path)
+        if not config_file.exists():
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+        
+        with open(config_file, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
         
-        # 初始化球轨迹追踪模块
-        ball_tracking_method = self.config['ball_tracking']['method']
-        if ball_tracking_method == 'yolo_tracker':
-            yolo_config = self.config['ball_tracking']['yolo']
-            self.ball_tracker = YOLOBallTracker(
-                model_path=yolo_config.get('model_path'),
-                conf_threshold=yolo_config.get('conf_threshold', 0.5),
-                iou_threshold=yolo_config.get('iou_threshold', 0.45)
-            )
-        elif ball_tracking_method == 'tracknetv3':
-            tracknet_config = self.config['ball_tracking']['tracknetv3']
-            self.ball_tracker = TrackNetv3Tracker(
-                model_path=tracknet_config.get('model_path'),
-                input_size=tuple(tracknet_config.get('input_size', [288, 512])),
-                confidence_threshold=tracknet_config.get('confidence_threshold', 0.5)
-            )
-        else:
-            raise ValueError(f"未知的球轨迹追踪方法: {ball_tracking_method}")
+        # Store method overrides
+        self.ball_tracking_method = ball_tracking_method
+        self.pose_estimation_method = pose_estimation_method
         
-        # 初始化姿态估计模块
-        pose_method = self.config['pose_estimation']['method']
-        if pose_method == 'yolo_pose':
-            yolo_pose_config = self.config['pose_estimation']['yolo_pose']
-            self.pose_estimator = YOLOPoseEstimator(
-                model=yolo_pose_config.get('model', 'yolo11n-pose.pt'),
-                conf_threshold=yolo_pose_config.get('conf_threshold', 0.5),
-                keypoint_threshold=yolo_pose_config.get('keypoint_threshold', 0.5)
-            )
-        elif pose_method == 'rtmw':
-            rtmw_config = self.config['pose_estimation']['rtmw']
-            self.pose_estimator = RTMWPoseEstimator(
-                model_path=rtmw_config.get('model_path'),
-                input_size=tuple(rtmw_config.get('input_size', [256, 192]))
-            )
-        else:
-            raise ValueError(f"未知的姿态估计方法: {pose_method}")
+        # Initialize ball tracking module
+        self.ball_tracker = self._init_ball_tracker()
         
-        # 初始化坐标统一模块
+        # Initialize pose estimation module
+        self.pose_estimator = self._init_pose_estimator()
+        
+        # Initialize coordinate unification module
         coord_config = self.config['coordinate_unify']
         self.coord_unifier = CoordinateUnifier(
             court_width=coord_config.get('court_width', 6.1),
             court_length=coord_config.get('court_length', 13.4),
-            camera_matrix=None,  # 可以后续添加相机标定
+            camera_matrix=None,  # Can be added later with camera calibration
             dist_coeffs=None
         )
         
-        # 初始化信息整合模块
+        # Initialize information integration module
         info_config = self.config['info_integration']
         video_config = self.config.get('video', {})
         self.info_integrator = InfoIntegrator(
@@ -93,230 +71,601 @@ class BadmintonAISystem:
             fps=video_config.get('fps', 30.0)
         )
         
-        # 初始化球种识别模块
-        shot_method = self.config['shot_classification']['method']
-        if shot_method == 'rule_based':
-            rule_config = self.config['shot_classification']['rule_based']
-            self.shot_classifier = RuleBasedClassifier(
-                speed_thresholds=rule_config.get('speed_thresholds'),
-                angle_thresholds=rule_config.get('angle_thresholds')
-            )
-        elif shot_method == 'classifier':
-            classifier_config = self.config['shot_classification']['classifier']
-            self.shot_classifier = MLShotClassifier(
-                model_path=classifier_config.get('model_path')
-            )
-        else:
-            raise ValueError(f"未知的球种识别方法: {shot_method}")
+        # Initialize shot classification module
+        self.shot_classifier = self._init_shot_classifier()
     
-    def process_video(self, video_path: str, output_dir: str, 
-                     visualize: bool = True) -> dict:
+    def _init_ball_tracker(self):
+        """Initialize ball tracking module based on config (MMDetection/MMPose style)"""
+        # Use method from parameter, or from config, or default to "tracknetv3"
+        method = self.ball_tracking_method
+        if method is None:
+            method = self.config['ball_tracking'].get('method', 'tracknetv3')
+        
+        tracker_config = self.config['ball_tracking'].get(method, {}).copy()
+        tracker_config['type'] = method
+        
+        # Handle special cases for input_size conversion
+        if method == 'tracknetv3' and 'input_size' in tracker_config:
+            tracker_config['input_size'] = tuple(tracker_config['input_size'])
+        
+        return registry.build_ball_tracker(tracker_config)
+    
+    def _init_pose_estimator(self):
+        """Initialize pose estimation module based on config (MMDetection/MMPose style)"""
+        # Use method from parameter, or from config, or default to "yolo_pose"
+        method = self.pose_estimation_method
+        if method is None:
+            method = self.config['pose_estimation'].get('method', 'yolo_pose')
+        
+        estimator_config = self.config['pose_estimation'].get(method, {}).copy()
+        estimator_config['type'] = method
+        
+        return registry.build_pose_estimator(estimator_config)
+    
+    def _init_shot_classifier(self):
+        """Initialize shot classification module based on config (MMDetection/MMPose style)"""
+        method = self.config['shot_classification']['method']
+        classifier_config = self.config['shot_classification'].get(method, {}).copy()
+        classifier_config['type'] = method
+        
+        return registry.build_shot_classifier(classifier_config)
+    
+    def _setup_video_stream(self, stream_url: Optional[str], test_mode: bool,
+                           test_frames: int, verbose: bool) -> Tuple[Dict, bool]:
+        """Setup video stream loading"""
+        use_random_frames = False
+        
+        if test_mode and (test_frames == 0 or (test_frames > 0 and stream_url is None)):
+            # Test mode: use random tensors
+            width, height = 1280, 720
+            fps = 30.0
+            frame_count = test_frames if test_frames > 0 else 2
+            video_info = {
+                'fps': fps,
+                'width': width,
+                'height': height,
+                'frame_count': frame_count
+            }
+            use_random_frames = True
+            if verbose:
+                print(f"Test mode: Using random tensors (size: {width}x{height}, frames: {frame_count})")
+        elif test_mode and test_frames > 0 and stream_url:
+            # Test mode: load limited frames from stream
+            cap, video_info = load_video_stream(stream_url)
+            video_info['frame_count'] = test_frames
+            cap.release()
+            if verbose:
+                print(f"Test mode: Processing {test_frames} frames from stream")
+                print(f"Stream info: {video_info['width']}x{video_info['height']}, {video_info['fps']} FPS")
+        else:
+            # Normal mode: load live stream
+            if stream_url is None:
+                raise ValueError("Stream URL required in normal mode")
+            cap, video_info = load_video_stream(stream_url)
+            cap.release()  # Release immediately, will reopen in frame_generator
+            if verbose:
+                frame_count_str = f"{video_info['frame_count']} frames" if video_info['frame_count'] else "live stream"
+                print(f"Stream info: {video_info['width']}x{video_info['height']}, "
+                      f"{video_info['fps']} FPS, {frame_count_str}")
+                print("Starting real-time stream processing...")
+        
+        return video_info, use_random_frames
+    
+    def _init_visualization_writer(self, output_path: Path, visualize: bool,
+                                  test_mode: bool, test_frames: int,
+                                  fps: float, width: int, height: int):
+        """Initialize visualization video writer"""
+        if visualize and not (test_mode and test_frames == 0):
+            vis_output_path = output_path / "visualization.mp4"
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            return cv2.VideoWriter(str(vis_output_path), fourcc, fps, (width, height))
+        return None
+    
+    def process_video(self, stream_url: Union[str, None], output_dir: str, 
+                     visualize: bool = True, 
+                     monitor_performance: bool = True,
+                     num_gpus: int = 2,
+                     verbose: bool = True,
+                     progress_callback: Optional[Callable[[int], None]] = None,
+                     test_mode: bool = False,
+                     test_frames: int = 2) -> dict:
         """
-        处理视频
+        Process online video stream (RTSP, RTMP, HTTP, etc.)
         
         Args:
-            video_path: 视频路径
-            output_dir: 输出目录
-            visualize: 是否生成可视化视频
+            stream_url: Video stream URL (e.g., rtsp://, rtmp://, http://, or camera index)
+            output_dir: Output directory
+            visualize: Whether to generate visualization video
+            monitor_performance: Whether to monitor performance
+            num_gpus: Number of GPUs
+            verbose: Whether to output detailed information
+            progress_callback: Progress callback function
+            test_mode: Test mode, if True, process limited frames or use random tensors
+            test_frames: Number of frames to process in test mode (0=use random tensor, >0=load specified frames)
             
         Returns:
-            处理结果字典
+            Processing results dictionary
         """
-        # 创建输出目录
+        # Create output directory
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # 加载视频
-        cap, video_info = load_video(video_path)
+        # Initialize performance monitor
+        perf_monitor = PerformanceMonitor(num_gpus=num_gpus) if monitor_performance else None
+        
+        # Load video stream or setup test mode
+        video_info, use_random_frames = self._setup_video_stream(
+            stream_url, test_mode, test_frames, verbose
+        )
+        width, height = video_info['width'], video_info['height']
         fps = video_info['fps']
-        width = video_info['width']
-        height = video_info['height']
         
-        print(f"视频信息: {width}x{height}, {fps} FPS, {video_info['frame_count']} 帧")
-        
-        # 初始化结果存储
+        # Initialize results storage
         results = {
             'ball_trajectory': [],
-            'player1_poses': [],
-            'player2_poses': [],
+            'player1_poses': [],  # For backward compatibility
+            'player2_poses': [],  # For backward compatibility
+            'all_poses': [],  # All detected people poses
             'hit_events': [],
             'shot_classifications': []
         }
         
-        # 可视化帧列表
-        vis_frames = []
+        # Initialize visualization writer
+        vis_writer = self._init_visualization_writer(
+            output_path, visualize, test_mode, test_frames, fps, width, height
+        )
         
-        # 处理每一帧
-        frame_idx = 0
-        for frame_idx, frame in frame_generator(video_path):
-            if frame_idx % 30 == 0:
-                print(f"处理帧 {frame_idx}/{video_info['frame_count']}")
-            
-            # 1. 球轨迹追踪
-            ball_result = self.ball_tracker.track(frame)
-            ball_pixel = None
-            ball_world = None
-            if ball_result:
-                x, y, conf = ball_result
-                ball_pixel = (x, y)
-                ball_world = self.coord_unifier.unify_ball_coordinate(
-                    ball_pixel, (width, height)
-                )
-                results['ball_trajectory'].append({
-                    'frame': frame_idx,
-                    'pixel': ball_pixel,
-                    'world': ball_world,
-                    'confidence': conf
-                })
-            
-            # 2. 姿态估计
-            if hasattr(self.pose_estimator, 'estimate_top2'):
-                player1_kpts, player2_kpts = self.pose_estimator.estimate_top2(frame)
-            else:
-                poses = self.pose_estimator.estimate(frame)
-                player1_kpts = poses[0] if len(poses) > 0 else None
-                player2_kpts = poses[1] if len(poses) > 1 else None
-            
-            # 统一坐标
-            player1_kpts_unified = None
-            player2_kpts_unified = None
-            if player1_kpts is not None:
-                player1_kpts_unified = self.coord_unifier.unify_pose_coordinates(
-                    player1_kpts, (width, height)
-                )
-                results['player1_poses'].append({
-                    'frame': frame_idx,
-                    'keypoints': player1_kpts_unified.tolist()
-                })
-            
-            if player2_kpts is not None:
-                player2_kpts_unified = self.coord_unifier.unify_pose_coordinates(
-                    player2_kpts, (width, height)
-                )
-                results['player2_poses'].append({
-                    'frame': frame_idx,
-                    'keypoints': player2_kpts_unified.tolist()
-                })
-            
-            # 3. 信息整合
-            hit_info = self.info_integrator.integrate(
-                frame_idx, ball_world, player1_kpts_unified, player2_kpts_unified
-            )
-            
-            if hit_info:
-                results['hit_events'].append({
-                    'frame': hit_info.frame_idx,
-                    'hitter': hit_info.hitter,
-                    'ball_position': hit_info.ball_position,
-                    'ball_velocity': hit_info.ball_velocity,
-                    'ball_direction': hit_info.ball_direction
-                })
+        # Trajectory history for visualization
+        trajectory_history = []
+        
+        # Process frames in real-time streaming
+        if test_mode and (test_frames == 0 or (test_frames > 0 and stream_url is None)):
+            # Use random tensors for testing (test_frames=0 or test_frames>0 and stream_url=None)
+            for frame_idx in range(video_info['frame_count']):
+                # Generate random RGB image (BGR format)
+                frame = np.random.randint(0, 255, (height, width, 3), dtype=np.uint8)
                 
-                # 4. 球种识别
-                shot_info = self.shot_classifier.classify(
-                    hit_info.ball_velocity,
-                    hit_info.ball_direction,
-                    hit_info.ball_position,
-                    hit_info.hitter,
-                    player1_kpts_unified if hit_info.hitter == 0 else player2_kpts_unified
-                )
+                if perf_monitor:
+                    perf_monitor.start_frame()
                 
-                if hasattr(shot_info, 'shot_type'):
-                    results['shot_classifications'].append({
-                        'frame': hit_info.frame_idx,
-                        'shot_type': shot_info.shot_type,
-                        'confidence': shot_info.confidence
-                    })
-                else:
-                    shot_type, confidence = shot_info
-                    results['shot_classifications'].append({
-                        'frame': hit_info.frame_idx,
-                        'shot_type': shot_type,
-                        'confidence': confidence
-                    })
-            
-            # 可视化
-            if visualize:
-                vis_frame = frame.copy()
+                # Call progress callback (if provided)
+                if progress_callback:
+                    progress_callback(frame_idx)
                 
-                # 绘制球
-                if ball_pixel:
-                    vis_frame = draw_ball(vis_frame, ball_pixel, 
-                                        results['ball_trajectory'][-1]['confidence'])
+                # Process frame (use random results, don't call actual model)
+                if perf_monitor:
+                    start_time = time.time()
                 
-                # 绘制轨迹
-                if len(results['ball_trajectory']) > 1:
-                    trajectory = [r['pixel'] for r in results['ball_trajectory'][-30:]]
-                    vis_frame = draw_trajectory(vis_frame, trajectory)
+                # 1. Ball tracking (using random results)
+                ball_result = None
+                if np.random.random() > 0.5:  # 50% probability of detecting ball
+                    x = np.random.uniform(0, width)
+                    y = np.random.uniform(0, height)
+                    conf = np.random.uniform(0.7, 1.0)
+                    ball_result = (x, y, conf)
                 
-                # 绘制姿态
-                if player1_kpts is not None:
-                    vis_frame = draw_pose(vis_frame, player1_kpts)
-                if player2_kpts is not None:
-                    vis_frame = draw_pose(vis_frame, player2_kpts)
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_ball_tracking(elapsed)
                 
-                # 绘制击球信息
-                if hit_info:
-                    text = f"Hit by Player {hit_info.hitter + 1}, Speed: {hit_info.ball_velocity:.1f} m/s"
-                    vis_frame = draw_text(vis_frame, text, (10, 30))
+                ball_pixel = None
+                ball_world = None
+                if ball_result:
+                    x, y, conf = ball_result
+                    ball_pixel = (x, y)
+                    ball_world = self.coord_unifier.unify_ball_coordinate(
+                        ball_pixel, (width, height)
+                    )
+                    current_velocity = self.info_integrator.get_current_ball_velocity()
                     
-                    if results['shot_classifications']:
-                        shot = results['shot_classifications'][-1]
-                        shot_text = f"Shot: {shot['shot_type']} ({shot['confidence']:.2f})"
-                        vis_frame = draw_text(vis_frame, shot_text, (10, 60))
+                    results['ball_trajectory'].append({
+                        'frame': frame_idx,
+                        'pixel': ball_pixel,
+                        'world': ball_world,
+                        'confidence': conf,
+                        'velocity': current_velocity
+                    })
+                    trajectory_history.append(ball_pixel)
+                    if len(trajectory_history) > 30:
+                        trajectory_history.pop(0)
                 
-                vis_frames.append(vis_frame)
+                # 2. Pose estimation (using random results)
+                if perf_monitor:
+                    start_time = time.time()
+                
+                # Generate random keypoints
+                player1_kpts = np.random.uniform(0, 1, (17, 3))
+                player1_kpts[:, :2] *= np.array([width, height])
+                player1_kpts[:, 2] = np.random.uniform(0.7, 1.0, 17)
+                
+                player2_kpts = np.random.uniform(0, 1, (17, 3))
+                player2_kpts[:, :2] *= np.array([width, height])
+                player2_kpts[:, 2] = np.random.uniform(0.7, 1.0, 17)
+                
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_pose_estimation(elapsed)
+                
+                # Unify coordinates for all detected people
+                all_poses_list = [player1_kpts, player2_kpts]
+                all_poses_unified = []
+                for pose in all_poses_list:
+                    if pose is not None:
+                        pose_unified = self.coord_unifier.unify_pose_coordinates(
+                            pose, (width, height)
+                        )
+                        all_poses_unified.append(pose_unified)
+                
+                # Store all poses
+                if len(all_poses_unified) > 0:
+                    frame_poses = []
+                    for pose_unified in all_poses_unified:
+                        frame_poses.append({
+                            'keypoints': pose_unified.tolist()
+                        })
+                    results['all_poses'] = results.get('all_poses', [])
+                    results['all_poses'].append({
+                        'frame': frame_idx,
+                        'people': frame_poses
+                    })
+                    
+                    # For backward compatibility: store first two as player1/player2
+                    player1_kpts_unified = all_poses_unified[0] if len(all_poses_unified) > 0 else None
+                    player2_kpts_unified = all_poses_unified[1] if len(all_poses_unified) > 1 else None
+                    
+                    if player1_kpts_unified is not None:
+                        results['player1_poses'].append({
+                            'frame': frame_idx,
+                            'keypoints': player1_kpts_unified.tolist()
+                        })
+                    
+                    if player2_kpts_unified is not None:
+                        results['player2_poses'].append({
+                            'frame': frame_idx,
+                            'keypoints': player2_kpts_unified.tolist()
+                        })
+                else:
+                    player1_kpts_unified = None
+                    player2_kpts_unified = None
+                
+                # 3. Information integration
+                if perf_monitor:
+                    start_time = time.time()
+                
+                if ball_world is not None:
+                    hit_info = self.info_integrator.integrate(
+                        frame_idx,
+                        ball_world,
+                        player1_kpts_unified,
+                        player2_kpts_unified
+                    )
+                    
+                    if hit_info is not None:
+                        results['hit_events'].append({
+                            'frame': frame_idx,
+                            'hitter': hit_info.hitter,
+                            'position': hit_info.ball_position,
+                            'ball_speed': hit_info.ball_velocity
+                        })
+                
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_integration(elapsed)
+                
+                # End inference timing (before visualization)
+                if perf_monitor:
+                    perf_monitor.end_inference()
+                
+                # 4. Visualization (skip in test mode)
+                if visualize and vis_writer is not None:
+                    vis_frame = frame.copy()
+                    if ball_pixel:
+                        vis_frame = draw_ball(vis_frame, ball_pixel)
+                    # Draw poses for all detected people (use original keypoints before unification)
+                    if player1_kpts is not None:
+                        vis_frame = draw_pose(vis_frame, player1_kpts)
+                    if player2_kpts is not None:
+                        vis_frame = draw_pose(vis_frame, player2_kpts)
+                    vis_writer.write(vis_frame)
+                
+                if perf_monitor:
+                    perf_monitor.end_frame()
+                    if frame_idx % 10 == 0:
+                        perf_monitor.update_gpu_memory()
+        else:
+            # Normal mode or test mode (load limited frames from stream)
+            frame_count = 0
+            for frame_idx, frame in frame_generator(stream_url):
+                if test_mode and test_frames > 0 and frame_count >= test_frames:
+                    break
+                frame_count += 1
+                
+                if perf_monitor:
+                    perf_monitor.start_frame()
+                
+                # Call progress callback (if provided)
+                if progress_callback:
+                    progress_callback(frame_idx)
+                
+                # 1. Ball tracking
+                if perf_monitor:
+                    start_time = time.time()
+                
+                ball_result = self.ball_tracker.track(frame)
+                
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_ball_tracking(elapsed)
+                
+                ball_pixel = None
+                ball_world = None
+                if ball_result:
+                    x, y, conf = ball_result
+                    ball_pixel = (x, y)
+                    ball_world = self.coord_unifier.unify_ball_coordinate(
+                        ball_pixel, (width, height)
+                    )
+                    # Get current ball velocity
+                    current_velocity = self.info_integrator.get_current_ball_velocity()
+                    
+                    results['ball_trajectory'].append({
+                        'frame': frame_idx,
+                        'pixel': ball_pixel,
+                        'world': ball_world,
+                        'confidence': conf,
+                        'velocity': current_velocity  # Add ball velocity information
+                    })
+                    trajectory_history.append(ball_pixel)
+                    # Keep only last 30 frames of trajectory
+                    if len(trajectory_history) > 30:
+                        trajectory_history.pop(0)
+                
+                # 2. Pose estimation (detect all people)
+                if perf_monitor:
+                    start_time = time.time()
+                
+                # Get all detected poses
+                all_poses = self.pose_estimator.estimate(frame)
+                
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_pose_estimation(elapsed)
+                
+                # Unify coordinates for all detected people
+                all_poses_unified = []
+                for pose in all_poses:
+                    if pose is not None:
+                        pose_unified = self.coord_unifier.unify_pose_coordinates(
+                            pose, (width, height)
+                        )
+                        all_poses_unified.append(pose_unified)
+                
+                # Store all poses (for backward compatibility, also store first two as player1/player2)
+                if len(all_poses_unified) > 0:
+                    # Store all poses
+                    frame_poses = []
+                    for pose_unified in all_poses_unified:
+                        frame_poses.append({
+                            'keypoints': pose_unified.tolist()
+                        })
+                    results['all_poses'] = results.get('all_poses', [])
+                    results['all_poses'].append({
+                        'frame': frame_idx,
+                        'people': frame_poses
+                    })
+                    
+                    # For backward compatibility: store first two as player1/player2
+                    player1_kpts_unified = all_poses_unified[0] if len(all_poses_unified) > 0 else None
+                    player2_kpts_unified = all_poses_unified[1] if len(all_poses_unified) > 1 else None
+                    
+                    if player1_kpts_unified is not None:
+                        results['player1_poses'].append({
+                            'frame': frame_idx,
+                            'keypoints': player1_kpts_unified.tolist()
+                        })
+                    
+                    if player2_kpts_unified is not None:
+                        results['player2_poses'].append({
+                            'frame': frame_idx,
+                            'keypoints': player2_kpts_unified.tolist()
+                        })
+                else:
+                    player1_kpts_unified = None
+                    player2_kpts_unified = None
+                
+                # 3. Information integration
+                if perf_monitor:
+                    start_time = time.time()
+                
+                hit_info = self.info_integrator.integrate(
+                    frame_idx, ball_world, player1_kpts_unified, player2_kpts_unified
+                )
+                
+                if perf_monitor:
+                    elapsed = time.time() - start_time
+                    perf_monitor.record_integration(elapsed)
+                
+                if hit_info:
+                    results['hit_events'].append({
+                        'frame': hit_info.frame_idx,
+                        'hitter': hit_info.hitter,
+                        'ball_position': hit_info.ball_position,
+                        'ball_velocity': hit_info.ball_velocity,
+                        'ball_direction': hit_info.ball_direction
+                    })
+                    
+                    # 4. Shot classification
+                    # Select corresponding keypoints based on hitter
+                    player_kpts = None
+                    if hit_info.hitter is not None:
+                        player_kpts = player1_kpts_unified if hit_info.hitter == 0 else player2_kpts_unified
+                    
+                    shot_info = self.shot_classifier.classify(
+                        hit_info.ball_velocity,
+                        hit_info.ball_direction,
+                        hit_info.ball_position,
+                        hit_info.hitter,
+                        player_kpts
+                    )
+                    
+                    if hasattr(shot_info, 'shot_type'):
+                        results['shot_classifications'].append({
+                            'frame': hit_info.frame_idx,
+                            'shot_type': shot_info.shot_type,
+                            'confidence': shot_info.confidence
+                        })
+                    else:
+                        shot_type, confidence = shot_info
+                        results['shot_classifications'].append({
+                            'frame': hit_info.frame_idx,
+                            'shot_type': shot_type,
+                            'confidence': confidence
+                        })
+                
+                # End inference timing (before visualization)
+                if perf_monitor:
+                    perf_monitor.end_inference()
+                
+                # Visualization
+                if visualize and vis_writer is not None:
+                    vis_frame = frame.copy()
+                    
+                    # Draw ball
+                    if ball_pixel:
+                        conf = results['ball_trajectory'][-1]['confidence'] if results['ball_trajectory'] else 0.5
+                        vis_frame = draw_ball(vis_frame, ball_pixel, conf)
+                    
+                    # Draw trajectory
+                    if len(trajectory_history) > 1:
+                        vis_frame = draw_trajectory(vis_frame, trajectory_history)
+                    
+                    # Draw poses for all detected people
+                    # Use original keypoints (before coordinate unification) for visualization
+                    if len(all_poses) > 0:
+                        for pose in all_poses:
+                            if pose is not None:
+                                vis_frame = draw_pose(vis_frame, pose)
+                    
+                    # Get current ball velocity (continuous display)
+                    current_velocity = self.info_integrator.get_average_ball_velocity(window_size=3)
+                    if current_velocity > 0.1:  # Only show meaningful ball speed
+                        speed_text = f"Ball Speed: {current_velocity:.1f} m/s"
+                        vis_frame = draw_text(vis_frame, speed_text, (10, 30), color=(0, 255, 255))
+                    
+                    # Draw hit information
+                    if hit_info:
+                        y_offset = 60 if current_velocity > 0.1 else 30
+                        if hit_info.hitter is not None:
+                            text = f"Hit by Player {hit_info.hitter + 1}, Speed: {hit_info.ball_velocity:.1f} m/s"
+                        else:
+                            text = f"Hit detected, Speed: {hit_info.ball_velocity:.1f} m/s"
+                        vis_frame = draw_text(vis_frame, text, (10, y_offset), color=(255, 255, 0))
+                        
+                        if results['shot_classifications']:
+                            shot = results['shot_classifications'][-1]
+                            shot_text = f"Shot: {shot['shot_type']} ({shot['confidence']:.2f})"
+                            vis_frame = draw_text(vis_frame, shot_text, (10, y_offset + 30))
+                    
+                    # Write frame (real-time write, no caching)
+                    vis_writer.write(vis_frame)
+                
+                # Update performance monitoring
+                if perf_monitor:
+                    perf_monitor.end_frame()
+                    if frame_idx % 30 == 0:  # Update GPU memory every 30 frames
+                        perf_monitor.update_gpu_memory()
         
-        cap.release()
+        if vis_writer:
+            vis_writer.release()
         
-        # 保存可视化视频
-        if visualize and vis_frames:
-            vis_output_path = output_path / "visualization.mp4"
-            from src.utils.video_utils import save_video
-            save_video(vis_frames, str(vis_output_path), fps, (width, height))
-            print(f"可视化视频已保存: {vis_output_path}")
+        # Test mode (test_frames=0): only inference, no results saved
+        if test_mode and test_frames == 0:
+            if verbose:
+                print("Test mode: Inference only, no results saved")
+            # Only return basic performance stats (if monitoring performance)
+            if perf_monitor:
+                return {
+                    'performance_stats': perf_monitor.stats.get_stats(),
+                    'gpu_memory_info': perf_monitor.get_gpu_memory(),
+                    'test_mode': True
+                }
+            return {'test_mode': True}
         
-        # 保存结果
-        import json
+        # Normal mode: save results and visualization
+        if visualize:
+            print(f"Visualization video saved: {output_path / 'visualization.mp4'}")
+        
+        # Save results
         results_path = output_path / "results.json"
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"结果已保存: {results_path}")
+        if verbose:
+            print(f"Results saved: {results_path}")
+        
+        # Print performance statistics
+        if perf_monitor:
+            if verbose:
+                perf_monitor.print_stats()
+            perf_stats_path = output_path / "performance_stats.json"
+            perf_monitor.save_stats(str(perf_stats_path))
+            # Add performance statistics to results
+            results['performance_stats'] = perf_monitor.stats.get_stats()
+            results['gpu_memory_info'] = perf_monitor.get_gpu_memory()
         
         return results
 
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='Badminton AI Analysis System')
-    parser.add_argument('--video', type=str, required=True,
-                       help='输入视频路径')
+    """Main function"""
+    parser = argparse.ArgumentParser(description='Badminton AI Analysis System - Online Stream Processing')
+    parser.add_argument('--stream', type=str, required=True,
+                       help='Video stream URL (e.g., rtsp://, rtmp://, http://, or camera index like 0)')
     parser.add_argument('--output', type=str, default='data/results',
-                       help='输出目录')
-    parser.add_argument('--config', type=str, default='src/config/config.yaml',
-                       help='配置文件路径')
+                       help='Output directory')
+    parser.add_argument('--config', type=str, default='configs/config.yaml',
+                       help='Configuration file path')
+    parser.add_argument('--ball-tracking-method', type=str, choices=['yolo_tracker', 'tracknetv3'],
+                       default=None, help='Ball tracking method (yolo_tracker or tracknetv3)')
+    parser.add_argument('--pose-estimation-method', type=str, choices=['rtmw', 'yolo_pose'],
+                       default=None, help='Pose estimation method (rtmw or yolo_pose)')
     parser.add_argument('--no-vis', action='store_true',
-                       help='不生成可视化视频')
+                       help='Do not generate visualization video')
+    parser.add_argument('--no-perf', action='store_true',
+                       help='Do not monitor performance')
+    parser.add_argument('--num-gpus', type=int, default=2,
+                       help='Number of GPUs (for performance monitoring)')
+    parser.add_argument('--test-mode', action='store_true',
+                       help='Test mode: use random tensors or process limited frames')
+    parser.add_argument('--test-frames', type=int, default=2,
+                       help='Number of frames to process in test mode (0=use random tensor, >0=load specified frames)')
     
     args = parser.parse_args()
     
-    # 初始化系统
-    print("初始化Badminton AI系统...")
-    system = BadmintonAISystem(config_path=args.config)
-    
-    # 处理视频
-    print(f"开始处理视频: {args.video}")
-    results = system.process_video(
-        args.video,
-        args.output,
-        visualize=not args.no_vis
+    # Initialize system
+    print("Initializing Badminton AI system...")
+    system = BadmintonAISystem(
+        config_path=args.config,
+        ball_tracking_method=args.ball_tracking_method,
+        pose_estimation_method=args.pose_estimation_method
     )
     
-    # 打印统计信息
-    print("\n处理完成！")
-    print(f"总帧数: {len(results['ball_trajectory'])}")
-    print(f"检测到击球事件: {len(results['hit_events'])}")
-    print(f"球种分类: {len(results['shot_classifications'])}")
+    # Process video stream
+    print(f"Starting stream processing: {args.stream}")
+    results = system.process_video(
+        args.stream,
+        args.output,
+        visualize=not args.no_vis,
+        monitor_performance=not args.no_perf,
+        num_gpus=args.num_gpus,
+        test_mode=args.test_mode,
+        test_frames=args.test_frames
+    )
+    
+    # Print statistics
+    print("\nProcessing completed!")
+    print(f"Total frames: {len(results.get('ball_trajectory', []))}")
+    print(f"Hit events detected: {len(results.get('hit_events', []))}")
+    print(f"Shot classifications: {len(results.get('shot_classifications', []))}")
 
 
 if __name__ == '__main__':

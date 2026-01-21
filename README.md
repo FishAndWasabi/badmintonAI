@@ -1,118 +1,109 @@
 # Badminton AI Analysis System
 
-羽毛球AI分析系统，包含球轨迹追踪、运动员姿态估计、坐标统一、信息整合和球种识别等功能模块。
+羽毛球AI分析系统 - 基于深度学习的羽毛球比赛视频分析工具
+
+## 功能特性
+
+- ✅ **球轨迹追踪** - 支持YOLO Tracker和TrackNetv3两种方法
+- ✅ **姿态估计** - 支持YOLO Pose和RTMW（mmpose）两种方法
+- ✅ **坐标统一** - 像素坐标转世界坐标
+- ✅ **信息整合** - 击球检测和球速估计
+- ✅ **球种识别** - 规则-based和ML分类器
+- ✅ **性能监控** - GPU显存使用和处理时延监控
+- ✅ **并行处理** - 多进程、多GPU支持
+
+## 快速开始
+
+### 1. 环境配置
+
+```bash
+# 创建Conda环境
+conda env create -f environment.yml
+
+# 激活环境
+conda activate badmintonAI
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+### 2. 运行测试
+
+```bash
+# 快速测试
+python scripts/test_video.py
+
+# 或使用并行处理
+python scripts/process_videos_parallel.py --video-dir data/videos
+```
+
+## 文档
+
+详细文档请查看 [docs/](docs/) 目录：
+
+- **[快速开始指南](docs/QUICKSTART.md)** - 环境配置和快速开始
+- **[项目结构说明](docs/PROJECT_STRUCTURE.md)** - 项目目录结构
+- **[脚本使用指南](docs/scripts_README.md)** - 所有脚本的使用说明
+- **[性能探查指南](docs/BENCHMARK_GUIDE.md)** - 性能测试和优化
+- **[完整文档索引](docs/README.md)** - 所有文档的索引
+
+## 系统要求
+
+- Python 3.8+
+- CUDA 11.0+ (推荐)
+- GPU: NVIDIA GPU with 8GB+ VRAM (推荐双3090)
+- 操作系统: Linux
 
 ## 项目结构
 
 ```
 badmintonAI/
-├── README.md
-├── environment.yml              # Conda环境配置
-├── requirements.txt             # Python依赖
-├── setup.sh                     # 环境设置脚本
-├── src/                         # 源代码目录
-│   ├── __init__.py
-│   ├── main.py                  # 主程序入口
-│   ├── config/                  # 配置文件
-│   │   ├── __init__.py
-│   │   └── config.yaml          # 系统配置
-│   ├── ball_tracking/           # 球轨迹追踪模块
-│   │   ├── __init__.py
-│   │   ├── yolo_tracker.py      # YOLO检测+轻量化单目标追踪
-│   │   └── tracknetv3.py        # TrackNetv3模型
-│   ├── pose_estimation/         # 运动员姿态估计模块
-│   │   ├── __init__.py
-│   │   ├── rtmw.py              # RTMW模型
-│   │   └── yolo_pose.py         # YOLOv11-n-Pose模型
-│   ├── coordinate_unify/        # 坐标统一模块
-│   │   ├── __init__.py
-│   │   └── unify.py             # 坐标统一处理
-│   ├── info_integration/        # 信息整合模块
-│   │   ├── __init__.py
-│   │   └── integration.py       # 信息整合处理
-│   ├── shot_classification/     # 球种识别模块
-│   │   ├── __init__.py
-│   │   ├── classifier.py        # 简单分类器
-│   │   └── rule_based.py        # 显式逻辑判断
-│   └── utils/                   # 工具函数
-│       ├── __init__.py
-│       ├── video_utils.py       # 视频处理工具
-│       └── visualization.py     # 可视化工具
-├── models/                      # 模型文件目录
-│   ├── ball_tracking/
-│   ├── pose_estimation/
-│   └── shot_classification/
-├── data/                        # 数据目录
-│   ├── videos/                  # 输入视频
-│   └── results/                 # 输出结果
-└── scripts/                     # 脚本目录
-    ├── download_models.sh       # 下载模型脚本
-    └── test.py                  # 测试脚本
+├── docs/              # 文档目录
+├── src/               # 源代码
+├── scripts/           # 脚本文件
+├── models/            # 模型文件
+├── data/              # 数据目录
+└── ckpts/             # 模型权重
 ```
 
-## 环境配置
+详细结构说明请查看 [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
 
-### 1. 创建Conda环境
+## 主要脚本
+
+### 并行处理（推荐）
 
 ```bash
-conda env create -f environment.yml
-conda activate badmintonAI
+# 并行处理所有视频
+python scripts/process_videos_parallel.py --video-dir data/videos --num-gpus 2
 ```
 
-### 2. 安装依赖
+### 顺序处理（调试/资源受限）
 
 ```bash
-pip install -r requirements.txt
+# 顺序处理所有视频
+python scripts/process_videos_sequential.py --video-dir data/videos
 ```
 
-### 3. 运行环境设置脚本
+### 性能探查
 
 ```bash
-bash setup.sh
+# 测试不同并发数下的性能
+python scripts/benchmark_concurrency.py --video-dir data/videos --num-gpus 2
 ```
 
-## 使用方法
+## 配置
 
-### 基本使用
+配置文件位于 `src/config/config.yaml`，可以配置：
 
-```bash
-python src/main.py --video path/to/video.mp4 --output path/to/output
-```
+- 球追踪方法（yolo_tracker / tracknetv3）
+- 姿态估计方法（yolo_pose / rtmw）
+- 模型路径和参数
+- 处理阈值
 
-### 测试用例
+## 许可证
 
-```bash
-python src/main.py --video TrackNetV2/Test/match1/video/1_05_02.mp4 --output data/results/match1
-```
+[添加许可证信息]
 
-## 模块说明
+## 联系方式
 
-### 1. 球轨迹追踪模块
-- **YOLO检测+轻量化单目标追踪**: 使用YOLO进行初始检测，然后使用轻量化追踪器进行跟踪
-- **TrackNetv3**: 使用TrackNetv3模型进行球轨迹追踪
-
-### 2. 运动员姿态估计模块
-- **RTMW**: 使用RTMW模型进行2D姿态估计
-- **YOLOv11-n-Pose**: 使用YOLOv11-n-Pose模型进行姿态估计
-
-### 3. 坐标统一模块
-将不同坐标系下的坐标统一到同一坐标系
-
-### 4. 信息整合模块
-整合球轨迹和运动员姿态信息，计算击球方和球的物理信息
-
-### 5. 球种识别模块
-- **简单分类器**: 基于机器学习的分类器
-- **显式逻辑判断**: 基于规则的球种识别
-
-## 模型下载
-
-运行以下脚本下载所需的模型：
-
-```bash
-bash scripts/download_models.sh
-```
-
-## 开发说明
-
-本项目支持从GitHub仓库克隆相关模型代码，并在Conda环境中自动配置。
+[添加联系方式]

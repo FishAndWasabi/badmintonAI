@@ -6,17 +6,19 @@ import pickle
 import os
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
+from src.utils.registry import SHOT_CLASSIFIERS
 
 
+@SHOT_CLASSIFIERS.register_module(name='classifier')
 class MLShotClassifier:
-    """基于机器学习的球种分类器"""
+    """Machine learning based shot type classifier"""
     
     def __init__(self, model_path: Optional[str] = None):
         """
-        初始化分类器
+        Initialize classifier
         
         Args:
-            model_path: 模型文件路径
+            model_path: Model file path
         """
         self.model_path = model_path
         self.model = None
@@ -25,7 +27,7 @@ class MLShotClassifier:
         if model_path and os.path.exists(model_path):
             self.load_model(model_path)
         else:
-            # 初始化一个简单的模型（需要训练）
+            # Initialize a simple model (needs training)
             self.model = RandomForestClassifier(n_estimators=100, random_state=42)
             self.is_trained = False
     
@@ -35,38 +37,38 @@ class MLShotClassifier:
                         hitter: Optional[int] = None,
                         player_keypoints: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        提取特征
+        Extract features
         
         Args:
-            ball_velocity: 球速
-            ball_direction: 方向向量
-            ball_position: 位置
-            hitter: 击球方
-            player_keypoints: 关键点
+            ball_velocity: Ball velocity
+            ball_direction: Direction vector
+            ball_position: Position
+            hitter: Hitter
+            player_keypoints: Keypoints
             
         Returns:
-            特征向量
+            Feature vector
         """
         dx, dy, dz = ball_direction
         
-        # 基础特征
+        # Basic features
         features = [
             ball_velocity,
             dx, dy, dz,
             ball_position[0], ball_position[1], ball_position[2],
-            np.sqrt(dx**2 + dy**2),  # 水平速度
-            np.arctan2(dz, np.sqrt(dx**2 + dy**2)),  # 角度
+            np.sqrt(dx**2 + dy**2),  # Horizontal velocity
+            np.arctan2(dz, np.sqrt(dx**2 + dy**2)),  # Angle
         ]
         
-        # 添加击球方信息
+        # Add hitter information
         if hitter is not None:
             features.append(hitter)
         else:
             features.append(-1)
         
-        # 添加玩家姿态特征（如果可用）
+        # Add player pose features (if available)
         if player_keypoints is not None:
-            # 手腕位置
+            # Wrist position
             if len(player_keypoints) > 10:
                 wrist_x = player_keypoints[9, 0] if player_keypoints[9, 2] > 0.5 else 0
                 wrist_y = player_keypoints[9, 1] if player_keypoints[9, 2] > 0.5 else 0
@@ -84,32 +86,32 @@ class MLShotClassifier:
                 hitter: Optional[int] = None,
                 player_keypoints: Optional[np.ndarray] = None) -> Tuple[str, float]:
         """
-        分类球种
+        Classify shot type
         
         Args:
-            ball_velocity: 球速
-            ball_direction: 方向向量
-            ball_position: 位置
-            hitter: 击球方
-            player_keypoints: 关键点
+            ball_velocity: Ball velocity
+            ball_direction: Direction vector
+            ball_position: Position
+            hitter: Hitter
+            player_keypoints: Keypoints
             
         Returns:
-            (球种类别, 置信度)
+            (Shot type category, confidence)
         """
         if self.model is None or not self.is_trained:
-            # 如果模型未训练，返回默认值
+            # If model not trained, return default value
             return ('unknown', 0.0)
         
-        # 提取特征
+        # Extract features
         features = self.extract_features(
             ball_velocity, ball_direction, ball_position,
             hitter, player_keypoints
         )
         
-        # 标准化
+        # Normalize
         features_scaled = self.scaler.transform(features.reshape(1, -1))
         
-        # 预测
+        # Predict
         prediction = self.model.predict(features_scaled)[0]
         probabilities = self.model.predict_proba(features_scaled)[0]
         confidence = np.max(probabilities)
@@ -118,25 +120,25 @@ class MLShotClassifier:
     
     def train(self, X: np.ndarray, y: np.ndarray):
         """
-        训练模型
+        Train model
         
         Args:
-            X: 特征矩阵
-            y: 标签
+            X: Feature matrix
+            y: Labels
         """
-        # 标准化
+        # Normalize
         X_scaled = self.scaler.fit_transform(X)
         
-        # 训练
+        # Train
         self.model.fit(X_scaled, y)
         self.is_trained = True
     
     def save_model(self, path: str):
         """
-        保存模型
+        Save model
         
         Args:
-            path: 保存路径
+            path: Save path
         """
         model_data = {
             'model': self.model,
@@ -148,10 +150,10 @@ class MLShotClassifier:
     
     def load_model(self, path: str):
         """
-        加载模型
+        Load model
         
         Args:
-            path: 模型路径
+            path: Model path
         """
         with open(path, 'rb') as f:
             model_data = pickle.load(f)

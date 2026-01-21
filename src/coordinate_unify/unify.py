@@ -6,27 +6,27 @@ import cv2
 
 
 class CoordinateUnifier:
-    """坐标统一模块"""
+    """Coordinate unification module"""
     
     def __init__(self, court_width: float = 6.1, 
                  court_length: float = 13.4,
                  camera_matrix: Optional[np.ndarray] = None,
                  dist_coeffs: Optional[np.ndarray] = None):
         """
-        初始化坐标统一器
+        Initialize coordinate unifier
         
         Args:
-            court_width: 球场宽度（米）
-            court_length: 球场长度（米）
-            camera_matrix: 相机内参矩阵 (3x3)
-            dist_coeffs: 畸变系数
+            court_width: Court width (meters)
+            court_length: Court length (meters)
+            camera_matrix: Camera intrinsic matrix (3x3)
+            dist_coeffs: Distortion coefficients
         """
         self.court_width = court_width
         self.court_length = court_length
         
-        # 如果没有提供相机参数，使用默认值
+        # Use default values if camera parameters not provided
         if camera_matrix is None:
-            # 默认相机内参（需要根据实际相机进行标定）
+            # Default camera intrinsics (needs calibration based on actual camera)
             self.camera_matrix = np.array([
                 [1000, 0, 640],
                 [0, 1000, 360],
@@ -40,40 +40,40 @@ class CoordinateUnifier:
         else:
             self.dist_coeffs = dist_coeffs
         
-        # 球场3D坐标（世界坐标系）
-        # 假设球场中心为原点，x轴沿宽度方向，y轴沿长度方向，z轴向上
+        # Court 3D coordinates (world coordinate system)
+        # Assume court center as origin, x-axis along width, y-axis along length, z-axis upward
         self.court_3d_points = np.array([
-            [0, 0, 0],  # 中心
-            [court_width/2, 0, 0],  # 右边界中心
-            [-court_width/2, 0, 0],  # 左边界中心
-            [0, court_length/2, 0],  # 前边界中心
-            [0, -court_length/2, 0],  # 后边界中心
+            [0, 0, 0],  # Center
+            [court_width/2, 0, 0],  # Right boundary center
+            [-court_width/2, 0, 0],  # Left boundary center
+            [0, court_length/2, 0],  # Front boundary center
+            [0, -court_length/2, 0],  # Back boundary center
         ], dtype=np.float32)
     
     def unify_ball_coordinate(self, pixel_coord: Tuple[float, float],
                              frame_size: Tuple[int, int]) -> Tuple[float, float, float]:
         """
-        将像素坐标转换为世界坐标（简化版本）
+        Convert pixel coordinates to world coordinates (simplified version)
         
         Args:
-            pixel_coord: 像素坐标 (x, y)
-            frame_size: 帧尺寸 (width, height)
+            pixel_coord: Pixel coordinates (x, y)
+            frame_size: Frame size (width, height)
             
         Returns:
-            世界坐标 (x, y, z) 或 (x, y, 0) 如果无法计算深度
+            World coordinates (x, y, z) or (x, y, 0) if depth cannot be calculated
         """
         x_pixel, y_pixel = pixel_coord
         width, height = frame_size
         
-        # 简化方法：假设球在地面上（z=0），使用逆透视变换
-        # 这里使用简单的线性映射（实际应该使用相机标定和透视变换）
+        # Simplified method: assume ball is on ground (z=0), use inverse perspective transform
+        # Here uses simple linear mapping (should use camera calibration and perspective transform in practice)
         
-        # 归一化到[-1, 1]
+        # Normalize to [-1, 1]
         x_norm = (x_pixel - width/2) / (width/2)
         y_norm = (y_pixel - height/2) / (height/2)
         
-        # 简单的线性映射（需要根据实际场景调整）
-        # 假设图像中心对应球场中心
+        # Simple linear mapping (needs adjustment based on actual scene)
+        # Assume image center corresponds to court center
         x_world = x_norm * self.court_width / 2
         y_world = y_norm * self.court_length / 2
         
@@ -82,39 +82,39 @@ class CoordinateUnifier:
     def unify_pose_coordinates(self, keypoints: np.ndarray,
                               frame_size: Tuple[int, int]) -> np.ndarray:
         """
-        统一姿态关键点坐标
+        Unify pose keypoint coordinates
         
         Args:
-            keypoints: 关键点数组 (N, 3) - (x, y, confidence)
-            frame_size: 帧尺寸 (width, height)
+            keypoints: Keypoint array (N, 3) - (x, y, confidence)
+            frame_size: Frame size (width, height)
             
         Returns:
-            统一后的关键点数组 (N, 3) - (x_world, y_world, confidence)
+            Unified keypoint array (N, 3) - (x_world, y_world, confidence)
         """
         unified_keypoints = keypoints.copy()
         
         for i in range(len(keypoints)):
-            if keypoints[i, 2] > 0:  # 如果关键点有效
+            if keypoints[i, 2] > 0:  # If keypoint is valid
                 x_world, y_world, _ = self.unify_ball_coordinate(
                     (keypoints[i, 0], keypoints[i, 1]), frame_size
                 )
                 unified_keypoints[i, 0] = x_world
                 unified_keypoints[i, 1] = y_world
-                # confidence保持不变
+                # confidence remains unchanged
         
         return unified_keypoints
     
     def pixel_to_world(self, pixel_coords: List[Tuple[float, float]],
                       frame_size: Tuple[int, int]) -> List[Tuple[float, float, float]]:
         """
-        批量转换像素坐标到世界坐标
+        Batch convert pixel coordinates to world coordinates
         
         Args:
-            pixel_coords: 像素坐标列表
-            frame_size: 帧尺寸
+            pixel_coords: List of pixel coordinates
+            frame_size: Frame size
             
         Returns:
-            世界坐标列表
+            List of world coordinates
         """
         world_coords = []
         for coord in pixel_coords:

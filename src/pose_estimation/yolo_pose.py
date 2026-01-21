@@ -4,21 +4,23 @@ import cv2
 import numpy as np
 from typing import List, Tuple, Optional
 from ultralytics import YOLO
+from src.utils.registry import POSE_ESTIMATORS
 
 
+@POSE_ESTIMATORS.register_module(name='yolo_pose')
 class YOLOPoseEstimator:
-    """YOLOv11-n-Pose姿态估计器"""
+    """YOLOv11-n-Pose pose estimator"""
     
     def __init__(self, model: str = "yolo11n-pose.pt",
                  conf_threshold: float = 0.5,
                  keypoint_threshold: float = 0.5):
         """
-        初始化姿态估计器
+        Initialize pose estimator
         
         Args:
-            model: 模型名称或路径
-            conf_threshold: 检测置信度阈值
-            keypoint_threshold: 关键点置信度阈值
+            model: Model name or path
+            conf_threshold: Detection confidence threshold
+            keypoint_threshold: Keypoint confidence threshold
         """
         self.model = YOLO(model)
         self.conf_threshold = conf_threshold
@@ -26,25 +28,25 @@ class YOLOPoseEstimator:
     
     def estimate(self, frame: np.ndarray) -> List[np.ndarray]:
         """
-        估计视频帧中所有玩家的姿态
+        Estimate poses for all players in video frame
         
         Args:
-            frame: 视频帧
+            frame: Video frame
             
         Returns:
-            关键点列表，每个元素是一个玩家的关键点数组 (17, 3) - (x, y, confidence)
-            COCO格式：0-鼻子, 1-左眼, 2-右眼, 3-左耳, 4-右耳, 5-左肩, 6-右肩,
-                     7-左肘, 8-右肘, 9-左手腕, 10-右手腕, 11-左髋, 12-右髋,
-                     13-左膝, 14-右膝, 15-左脚踝, 16-右脚踝
+            List of keypoints, each element is a player's keypoint array (17, 3) - (x, y, confidence)
+            COCO format: 0-nose, 1-left eye, 2-right eye, 3-left ear, 4-right ear, 5-left shoulder, 6-right shoulder,
+                     7-left elbow, 8-right elbow, 9-left wrist, 10-right wrist, 11-left hip, 12-right hip,
+                     13-left knee, 14-right knee, 15-left ankle, 16-right ankle
         """
-        results = self.model(frame, conf=self.conf_threshold)
+        results = self.model(frame, conf=self.conf_threshold, verbose=False)
         
         poses = []
         for result in results:
             if result.keypoints is not None:
                 keypoints = result.keypoints.data.cpu().numpy()  # (N, 17, 3)
                 for kpt in keypoints:
-                    # 过滤低置信度的关键点
+                    # Filter low confidence keypoints
                     filtered_kpt = kpt.copy()
                     filtered_kpt[filtered_kpt[:, 2] < self.keypoint_threshold] = [0, 0, 0]
                     poses.append(filtered_kpt)
@@ -53,19 +55,19 @@ class YOLOPoseEstimator:
     
     def estimate_top2(self, frame: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
-        估计前两个玩家的姿态（通常羽毛球比赛有2名玩家）
+        Estimate poses for top 2 players (badminton typically has 2 players)
         
         Args:
-            frame: 视频帧
+            frame: Video frame
             
         Returns:
             (player1_keypoints, player2_keypoints)
         """
         poses = self.estimate(frame)
         
-        # 根据检测框的y坐标排序（假设下方的玩家是player1，上方的是player2）
+        # Sort by y coordinate (assume lower player is player1, upper is player2)
         if len(poses) >= 2:
-            # 计算每个玩家的平均y坐标
+            # Calculate average y coordinate for each player
             player_positions = []
             for i, pose in enumerate(poses):
                 valid_kpts = pose[pose[:, 2] > self.keypoint_threshold]
@@ -73,7 +75,7 @@ class YOLOPoseEstimator:
                     avg_y = np.mean(valid_kpts[:, 1])
                     player_positions.append((i, avg_y))
             
-            # 按y坐标排序（y越大越靠下）
+            # Sort by y coordinate (larger y means lower position)
             player_positions.sort(key=lambda x: x[1], reverse=True)
             
             player1 = poses[player_positions[0][0]] if len(player_positions) > 0 else None
