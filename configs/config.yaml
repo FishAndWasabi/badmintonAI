@@ -8,15 +8,15 @@ ball_tracking:
   tracknetv3:
     model_path: "ckpts/ball_tracking/TrackNet_best.pt"
     input_size: [288, 512]
-    confidence_threshold: 0.5
+    confidence_threshold: 0.7
 
 # 姿态估计配置
 pose_estimation:
   # method 已移至主函数参数，可通过命令行指定
   yolo_pose:
     model: "yolo11n-pose.pt"  # 使用ultralytics预训练模型
-    conf_threshold: 0.1
-    keypoint_threshold: 0.1
+    conf_threshold: 0.5
+    keypoint_threshold: 0.5
   rtmw:
     config_path: null  # Auto-detect if null
     checkpoint_path: null  # Auto-download if null
